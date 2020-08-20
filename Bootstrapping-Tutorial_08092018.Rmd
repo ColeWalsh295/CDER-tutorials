@@ -1,0 +1,162 @@
+---
+output:
+  pdf_document: default
+  html_document: default
+---
+
+# Load necessary packages
+```{r, results = 'hide', message = FALSE, warning = FALSE}
+library(tidyverse)
+library(broom)
+library(xlsx)
+library(infer)
+```
+
+# Load the file and prepare the data for analysis
+```{r}
+# only matched data for simplicity
+df <- read.csv('C:/Users/Cole/Documents/DATA/PLIC_DATA/Collective_Surveys/Merged/Merged_Concat.csv') %>%
+  select(Q6b_y, Q6b.i_y, Q6e_1_y, Q6e_2_y, PreScores, PostScores) %>%
+  mutate(Gender = case_when( # convert gender and major columns to something readable
+    Q6e_1_y == 1 ~ 'M',
+    Q6e_2_y == 1 ~ 'F'
+  ),
+  Major = case_when(
+    Q6b_y < 4 ~ 'Physics',
+    Q6b.i_y == 1 ~ 'Engineering',
+    Q6b.i_y == 2 | Q6b.i_y == 3 ~ 'Other Science',
+    Q6b.i_y == 4 ~ 'Other'
+  )) %>%
+  select(Gender, Major, PreScores, PostScores)
+
+glimpse(df)
+head(df, 20)
+```
+
+# Bootstrapping means, medians, and other descriptive stats
+
+## Summary statistics
+```{r}
+ggplot(df, aes(x = PostScores)) +
+  geom_histogram(bins = 20)
+
+Sample_Mean <- mean(df$PostScores)
+
+# Standard Error
+Sample_Mean_sd <- sd(df$PostScores)/sqrt(nrow(df))
+
+Sample_Mean
+Sample_Mean_sd
+```
+
+## Bootstrap mean
+```{r}
+set.seed(11) # for reproducibility
+
+Bootstrap_Means <- df %>%
+  specify(response = PostScores) %>%  
+  generate(reps = 10000, type = "bootstrap") %>% 
+  calculate(stat = "mean")
+
+ggplot(Bootstrap_Means, aes(x = stat)) +
+  geom_histogram(bins = 50)
+
+Bootstrap_Means %>%
+  summarize(Sample_Mean,
+            Sample_Mean_sd,
+            l = quantile(stat, 0.025),
+            u = quantile(stat, 0.975))
+```
+
+*The mean and standard deviation of the distribution of bootstrapped means is pretty much identical to the mean and standard error of the sample.*
+
+## Bootstrap median
+```{r}
+set.seed(11)
+
+Sample_Median <- median(df$PostScores)
+
+Bootstrap_Medians <- df %>%
+  specify(response = PostScores) %>%  
+  generate(reps = 10000, type = "bootstrap") %>% 
+  calculate(stat = "median")
+
+ggplot(Bootstrap_Medians, aes(x = stat)) +
+  geom_histogram(bins = 10)
+
+Bootstrap_Medians %>%
+  summarize(Sample_Median,
+            se = sd(stat),
+            l = quantile(stat, 0.025),
+            u = quantile(stat, 0.975))
+```
+
+*The central limit theorem ensures that the distribution of any aggregated measure (such as mean or meadian) with finite variance will be normally distributed. Bootstrapping (and analagous resampling methods) allows us to take advantage of this theorem to calculate confidence intervals and conduct hypothesis tests with many aggregate measures that are not necessarily normally distributed.*
+
+# Bootstrapping and linear regression
+
+## Summary statistics and histograms
+```{r}
+df_filtered <- df %>%
+  filter(!is.na(Gender) & !is.na(Major)) # get only complete demographic data
+
+glimpse(df_filtered)
+
+ggplot(df_filtered, aes(x = PostScores)) +
+  geom_histogram(bins = 20) +
+  facet_wrap(~Gender)
+
+ggplot(df_filtered, aes(x = PostScores)) +
+  geom_histogram(bins = 20) +
+  facet_grid(Gender ~ Major)
+```
+
+## Regression with sample data
+```{r}
+ggplot(df, aes(x = PreScores, y = PostScores)) +
+  geom_point() +
+  geom_smooth(method = 'lm')
+  
+  summary(lm(PostScores ~ PreScores, data = df))
+```
+
+## Bootstrapped regression
+```{r}
+set.seed(11)
+
+# sample sizes of 300, no replacement...I don't want this to run forever
+Many_Samples <- rep_sample_n(df_filtered, 1000, reps = 100)
+
+glimpse(Many_Samples)
+
+# Plot the regression lines
+ggplot(Many_Samples, aes(x = PreScores, y = PostScores, group = replicate)) + 
+  geom_point() + 
+  geom_smooth(method = "lm", se = FALSE)
+```
+
+## Distribution of bootstrapped slopes
+```{r}
+Sample_Slope <- lm(PostScores ~ PreScores, data = df_filtered) %>%
+  tidy() %>%
+  filter(term == "PreScores") %>%
+  summarize(estimate, std.error)
+
+Sample_Slope
+
+Bootstrap_Slopes <- df_filtered %>% 
+  specify(PostScores ~ PreScores) %>%  
+  generate(reps = 100, type = "bootstrap") %>% 
+  calculate(stat = "slope")
+
+ggplot(Bootstrap_Slopes, aes(x = stat)) + 
+  geom_histogram(bins = 8)
+
+Bootstrap_Slopes %>%
+  summarize(slope = Sample_Slope$estimate,
+            se = sd(stat),
+            l = quantile(stat, 0.025),
+            u = quantile(stat, 0.975))
+```
+
+*The mean and standard deviation of the slope distribution is again pretty much identical to the slope and standard error for our regression above.*

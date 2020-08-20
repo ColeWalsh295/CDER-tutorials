@@ -1,0 +1,190 @@
+---
+output:
+  pdf_document: default
+  html_document: default
+---
+**Chunk 1: Import (or install) necessary packages)**
+```{r}
+#install.packages('tidyverse')
+library(tidyverse)
+#install.packages('data.table')
+library(data.table)
+#install.packages('igraph')
+library(igraph)
+```
+
+Next, we'll import and clean the data for analysis. This is a little involved, so don't worry about following all of this. Some of the functions can be useful for making your life easier though.
+
+**Chunk 2: Import Data and select only columns corresponding to response choices**
+```{r}
+df <- fread('C:/Users/Cole/Documents/DATA/PLIC_DATA/Collective_Surveys/POST_Valid/Spring2019_POST_Valid.csv') # Fast read into data.table
+
+# Subset Data on columns, keeping an ID column corresponding to the student and all of the response choice columns
+df.responses <- df[, .SD, .SDcols = names(df) %like% "(V1|((Q1b|Q1d|Q1e|Q2b|Q2d|Q2e|Q3b|Q3d|Q3e|Q4b)_[0-9]+$))"]
+
+# Check out the data.table that we are working with
+head(df.responses)
+```
+
+**Chunk 3: Now we'll start by building a bipartite network connecting all of the students to the all of their selections**
+```{r}
+df.bipartite <- melt(df.responses, id.vars = 'V1')
+head(df.bipartite)
+```
+
+Notice that this data.table contains all combinations of the student ID column (V1) with all other columns (now melted into the variable column) even when there was no connection between a student and response choice (i.e., the value is NA). We'll deal with this now.
+
+**Chunk 4**
+```{r}
+df.bipartite.selected <- df.bipartite[!is.na(df.bipartite$value), c('V1', 'variable')] %>%
+  `colnames<-`(c("Student", "Response.Choice"))
+head(df.bipartite.selected)
+```
+
+Great! Now we can make our bipartite graph.
+
+**Chunk 5**
+```{r}
+graph.bipartite <- graph_from_data_frame(df.bipartite.selected)
+
+# This assigns item and student types to the individual nodes so we can distinguish between them
+V(graph.bipartite)$type <- V(graph.bipartite)$name %in% df.bipartite.selected$Student 
+
+# The above graph is pretty huge, takes a lot of power to plot, and isn't all that useful when plotted. We'll make a smaller one to see what happened with three students
+
+graph.bipartite.little <- graph_from_data_frame(df.bipartite.selected[Student %in% c('R_3Kp9oJu0hbMiOhC', 'R_1oojsdiRvtWkpqJ', 'R_2D0sbVC0DMFx3Sl')])
+V(graph.bipartite.little)$type <- V(graph.bipartite.little)$name %in% df.bipartite.selected$Student 
+
+plot(graph.bipartite.little, layout = layout_as_bipartite, vertex.label = NA)
+```
+
+Note that I'm not going to spend time making the pictures look nicer, see the igraph documentation (https://igraph.org/r/) for information on optional arguments to prettify your graphs!
+
+There's some analyses that we can do with bipartite graphs, but I figure the most common graphs people will come across aren't bipartite, so we'll go ahead and project this graph onto response choices/students.
+
+**Chunk 6: Project bipartite graph onto the space spanned by the response choices and students separately**
+```{r}
+projected.graph <- bipartite_projection(graph.bipartite)
+graph.responses <- projected.graph$proj1
+graph.students <- projected.graph$proj2
+```
+
+**Chunk 7: Plot the response choices graph**
+```{r}
+plot(graph.responses)
+```
+
+Thislayout was constructed with a force directed algorithm that minimizes edge crossing so that the graph is "aesthetically pleasing". Notice the ten "outlier" nodes. These correspond to the response choice "other" for each question. We could have (and should have) removed these from our analysis, so we'll do that now.
+
+This graph is also a little hard to see. Let's make a subgraph of Q2E.
+
+**Chunk 8**
+```{r}
+graph.responses.NoOther <- delete_vertices(graph.responses, c('Q1b_19', 'Q1d_10', 'Q1e_12', 'Q2b_38', 'Q2d_11', 'Q2e_11', 'Q3b_10', 'Q3d_29', 'Q3e_8', 'Q4b_11'))
+
+graph.Q2E <- induced_subgraph(graph.responses.NoOther, which(grepl('Q2e', V(graph.responses.NoOther)$name)))
+plot(graph.Q2E)
+```
+
+So, everything is connected to everything else. We need to make clearer what's important and what's not. We can adjust the size of the nodes and shading of the edges based on the strength of the nodes and weights of the edges, respectively.
+
+Degree centrality = total number of edges connected to a node. For a directed graph, one can specify 'indegree' and 'outdegree'. Here, we have an undirected graph, so we'll keep it simple.
+
+Strength = related to degree centrality, but sums the weights of connected edges in a weighted network
+
+Edge weight = we've defined here as the total number of students that selected any pair of response choices. Not all graphs or weighted (i.e., facebook social network).
+
+**Chunk 9**
+```{r}
+V(graph.Q2E)$strength <- strength(graph.Q2E)
+
+plot(graph.Q2E, vertex.size = V(graph.Q2E)$strength/max(V(graph.Q2E)$strength) * 30, edge.width = E(graph.Q2E)$weight/max(E(graph.Q2E)$weight) * 10, margin = -0.2)
+```
+
+Another common measure of the importance of nodes and edges is betweenness. Imagine finding the shortest path from every node to every other node; this is a geodesic (if you're familiar with general relativity, this should be familiar). Vertex betweenness identifies how many geodesics include a particular node. Edge betweenness identifies how many geodesics include a particular edge.
+
+There are generalizations for weighted edges, but we'll use something more concrete: Zachary's karate club network! Pro tip: the first person to use this example in a talk at every network analysis conference gets a small trophy and is inducted into the Zachary Karate Club Club...there have been 18 winners since inaugurated in 2013.
+
+**Chunk 10: Load the new dataset and take a look!**
+```{r}
+#install.packages('igraphdata')
+library(igraphdata)
+
+data(karate)
+plot(karate)
+```
+
+**Chunk 11: Let's first look at betweenness centrality.**
+```{r}
+degree(karate)
+
+# And now vertex and edge betweenness
+betweenness(karate, directed = FALSE)
+edge.betweenness <- cbind(as_edgelist(karate), edge_betweenness(karate, directed = FALSE))
+edge.betweenness[order(edge.betweenness[, 3], decreasing = TRUE),][1:10,]
+```
+
+There are, of course, a number of measures one can use to look at individual nodes and edges in a network in addition to the ones we have used here (i.e., distance, closeness, etc.).
+
+One can also quantify aspects of the entire network. We'll take a look at a couple such measures here.
+
+Density = number of edges / number of all possible edges (research has indicated that active learning classrooms are denser than traditional classrooms)
+
+Diameter = a network's longest path
+
+Average path length = average shortest path between two nodes
+
+**Chunk 12**
+```{r}
+edge_density(karate)
+diameter(karate, directed = FALSE)
+mean_distance(karate, directed = FALSE)
+```
+
+You might also have noticed the colouring in the karate club network. This represents a community structure. Girvan and Newman first used a hierarchical algorithm to find this community structure; they successively removed the edges with the largest edge betweenness, further disconnecting the graph on each iteration.
+
+There are a number of methods for finding communities in a network. Another common class of methods involve modularity optimization.
+
+Modularity is a measure of the ratio of the number of edges within communities to the number of edges that stretch across two communities and is equal to zero when the number of edges within a community is no different than what would be expected in a randomized network of the same density.
+
+Plenty of other methods exist that use random walks or eigenvectors of the modularity matrix, but we'll use a greedy modularity optimization method here with the network of students.
+
+**Chunk 13**
+```{r}
+communities.students <- cluster_fast_greedy(graph.students)
+V(graph.students)$community <- communities.students$membership
+```
+
+**Chunk 14: Plot sample of students graph**
+```{r}
+graph.students.little <- induced_subgraph(graph.students, inds <- sample(1:nrow(df), 20))
+V(graph.students.little)$community
+
+plot(graph.students.little, vertex.label = NA, vertex.color = V(graph.students.little)$community, edge.width = E(graph.students.little)$weight / 4)
+```
+
+Here the edge connecting two students denotes the number of common answers they shared on the assessment.
+
+We can use this information to ask questions like: are the communities (groups of students who answered the assessment similarly) independent of student gender, for example?
+
+**Chunk 15: Create dataframe from students graph and merge it back with the original dataframe**
+```{r}
+df.students <- as_data_frame(graph.students, what = 'vertices')
+df.Orig.communities <- inner_join(df, df.students, by = c('V1' = 'name'))
+
+# We'll test the association between community membership and gender, but first we need to create a variable for gender from the dataframe...don't worry about this
+df.Orig.communities <- df.Orig.communities %>%
+  mutate(Gender = case_when(
+    Q6e_1 == 1 ~ 'M',
+    Q6e_2 == 1 ~ 'F',
+    TRUE ~ NA_character_
+  )) %>%
+  filter(!is.na(Gender))
+
+#Now, we perform a chisq test of independence
+chisq.test(df.Orig.communities$community, df.Orig.communities$Gender)
+```
+**We fail to reject the null hypothesis that community association is independent of gender.**
+
+These and other measures can be compared to random networks to test for significance and can be used in other models (i.e., using centrality as a variable in a linear model for physics anxiety).
+
